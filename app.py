@@ -1,40 +1,25 @@
 import streamlit as st
 import os
-import time
 from langchain_community.document_loaders import PyPDFDirectoryLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
 from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.prompts import ChatPromptTemplate
 
 # ==========================================
-# KONFIGURASI TAMPILAN HALAMAN (UI/UX)
+# KONFIGURASI TAMPILAN
 # ==========================================
-st.set_page_config(
-    page_title="Asisten Layanan DJPb",
-    page_icon="🏛️",
-    layout="centered"
-)
+st.set_page_config(page_title="Asisten Layanan DJPb", page_icon="🏛️", layout="centered")
 
 st.markdown("""
     <style>
-    .stApp {
-        background-color: #f4f6f9;
-    }
-    .stChatMessage {
-        border-radius: 10px;
-        padding: 10px;
-        margin-bottom: 10px;
-    }
-    .stChatMessage[data-baseweb="block"]:nth-child(even) {
-        background-color: #e3f2fd; 
-    }
-    .stChatMessage[data-baseweb="block"]:nth-child(odd) {
-        background-color: #ffffff; 
-        border: 1px solid #bbdefb;
-    }
+    .stApp { background-color: #f4f6f9; }
+    .stChatMessage { border-radius: 10px; padding: 10px; margin-bottom: 10px; }
+    .stChatMessage[data-baseweb="block"]:nth-child(even) { background-color: #e3f2fd; }
+    .stChatMessage[data-baseweb="block"]:nth-child(odd) { background-color: #ffffff; border: 1px solid #bbdefb; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -42,10 +27,10 @@ st.title("🏛️ Asisten Virtual Layanan Perbendaharaan")
 st.caption("Layanan Informasi Berbasis Referensi Resmi - Kanwil DJPb")
 
 # ==========================================
-# LOGIKA RAG (Retrieval-Augmented Generation)
+# LOGIKA PEMROSESAN LOKAL (ANTI-GAGAL)
 # ==========================================
 
-@st.cache_resource(show_spinner="Menyiapkan otak AI dan menyinkronkan dokumen (mohon tunggu beberapa menit)...")
+@st.cache_resource(show_spinner="Memproses referensi secara lokal (Aman dari limit API)...")
 def load_and_process_documents():
     if not os.path.exists("referensi"):
         os.makedirs("referensi")
@@ -60,44 +45,11 @@ def load_and_process_documents():
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     docs = text_splitter.split_documents(documents)
     
-    # Model embedding terbaru yang valid
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    # SOLUSI: Menggunakan Embedding Lokal. Tidak ada limit API Google.
+    embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     
-    batch_size = 90 
-    vectorstore = None
-    
-    progress_text = "Membaca dan memproses halaman regulasi..."
-    my_bar = st.progress(0, text=progress_text)
-    total_batches = (len(docs) + batch_size - 1) // batch_size
-    
-    for i in range(0, len(docs), batch_size):
-        batch = docs[i:i + batch_size]
-        
-        # MEKANISME ANTI-GAGAL (RETRY & BACKOFF) UNTUK API GRATIS
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                if vectorstore is None:
-                    vectorstore = FAISS.from_documents(batch, embeddings)
-                else:
-                    vectorstore.add_documents(batch)
-                break # Jika berhasil, keluar dari loop retry
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    time.sleep(10) # Jika kena limit Google, diam 10 detik lalu coba lagi
-                else:
-                    # Jika gagal total 3 kali, tampilkan error aslinya ke layar admin
-                    st.error(f"Gagal memproses dokumen pada batch ke-{i//batch_size + 1}. Error sistem: {str(e)}")
-                    st.stop()
-        
-        current_batch = (i // batch_size) + 1
-        progress_percentage = current_batch / total_batches
-        my_bar.progress(progress_percentage, text=f"{progress_text} ({int(progress_percentage*100)}%) - Aman dari Limit API")
-        
-        # Jeda 5 detik antar batch = Maksimal 12 request per menit (Sangat aman untuk Free Tier Google API)
-        time.sleep(5) 
-            
-    my_bar.empty() 
+    # Proses langsung seluruh potongan tanpa perlu dicicil
+    vectorstore = FAISS.from_documents(docs, embeddings)
     return vectorstore
 
 def get_conversational_chain(vectorstore):
@@ -124,11 +76,11 @@ def get_conversational_chain(vectorstore):
     return rag_chain
 
 # ==========================================
-# ANTARMUKA CHATBOT STREAMLIT
+# ANTARMUKA CHATBOT
 # ==========================================
 
 if "GOOGLE_API_KEY" not in st.secrets:
-    st.error("⚠️ API Key belum dikonfigurasi. Silakan atur GOOGLE_API_KEY di Streamlit Secrets.")
+    st.error("⚠️ API Key belum dikonfigurasi di Streamlit Secrets.")
     st.stop()
 
 os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
