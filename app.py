@@ -64,8 +64,8 @@ def load_and_process_documents():
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     docs = text_splitter.split_documents(documents)
     
-    # 4. Inisialisasi model Embeddings Gemini
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+    # 4. Inisialisasi model Embeddings Gemini (PERBAIKAN ERROR 404 DI SINI)
+    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     
     # 5. BATCHING LOGIC: Mengatasi limit maksimal API Google
     batch_size = 90 # Batas aman di bawah 100
