@@ -18,7 +18,6 @@ st.set_page_config(
     layout="centered"
 )
 
-# Kustomisasi warna (Monokromatik Biru khas Perbendaharaan)
 st.markdown("""
     <style>
     .stApp {
@@ -30,10 +29,10 @@ st.markdown("""
         margin-bottom: 10px;
     }
     .stChatMessage[data-baseweb="block"]:nth-child(even) {
-        background-color: #e3f2fd; /* Biru muda untuk user */
+        background-color: #e3f2fd; 
     }
     .stChatMessage[data-baseweb="block"]:nth-child(odd) {
-        background-color: #ffffff; /* Putih untuk asisten */
+        background-color: #ffffff; 
         border: 1px solid #bbdefb;
     }
     </style>
@@ -46,60 +45,64 @@ st.caption("Layanan Informasi Berbasis Referensi Resmi - Kanwil DJPb")
 # LOGIKA RAG (Retrieval-Augmented Generation)
 # ==========================================
 
-@st.cache_resource(show_spinner="Sinkronisasi aturan (membutuhkan waktu beberapa menit untuk dokumen tebal)...")
+@st.cache_resource(show_spinner="Menyiapkan otak AI dan menyinkronkan dokumen (mohon tunggu beberapa menit)...")
 def load_and_process_documents():
-    # 1. Pastikan folder referensi ada
     if not os.path.exists("referensi"):
         os.makedirs("referensi")
         return None
 
-    # 2. Baca semua PDF di folder referensi
     loader = PyPDFDirectoryLoader("referensi/")
     documents = loader.load()
     
     if not documents:
         return None
 
-    # 3. Memecah dokumen menjadi potongan kecil (chunks)
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
     docs = text_splitter.split_documents(documents)
     
-    # 4. Inisialisasi model Embeddings Gemini (PERBAIKAN ERROR 404 DI SINI)
+    # Model embedding terbaru yang valid
     embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
     
-    # 5. BATCHING LOGIC: Mengatasi limit maksimal API Google
-    batch_size = 90 # Batas aman di bawah 100
+    batch_size = 90 
     vectorstore = None
     
-    progress_text = "Memproses dokumen ke dalam database..."
+    progress_text = "Membaca dan memproses halaman regulasi..."
     my_bar = st.progress(0, text=progress_text)
     total_batches = (len(docs) + batch_size - 1) // batch_size
     
     for i in range(0, len(docs), batch_size):
         batch = docs[i:i + batch_size]
-        if vectorstore is None:
-            # Inisialisasi awal database vektor
-            vectorstore = FAISS.from_documents(batch, embeddings)
-        else:
-            # Menambahkan dokumen berikutnya ke dalam database vektor
-            vectorstore.add_documents(batch)
         
-        # Update progress bar
+        # MEKANISME ANTI-GAGAL (RETRY & BACKOFF) UNTUK API GRATIS
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                if vectorstore is None:
+                    vectorstore = FAISS.from_documents(batch, embeddings)
+                else:
+                    vectorstore.add_documents(batch)
+                break # Jika berhasil, keluar dari loop retry
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(10) # Jika kena limit Google, diam 10 detik lalu coba lagi
+                else:
+                    # Jika gagal total 3 kali, tampilkan error aslinya ke layar admin
+                    st.error(f"Gagal memproses dokumen pada batch ke-{i//batch_size + 1}. Error sistem: {str(e)}")
+                    st.stop()
+        
         current_batch = (i // batch_size) + 1
         progress_percentage = current_batch / total_batches
-        my_bar.progress(progress_percentage, text=f"{progress_text} ({int(progress_percentage*100)}%)")
+        my_bar.progress(progress_percentage, text=f"{progress_text} ({int(progress_percentage*100)}%) - Aman dari Limit API")
         
-        # Jeda 2 detik untuk menghindari error "429 Too Many Requests" dari Google API
-        time.sleep(2) 
+        # Jeda 5 detik antar batch = Maksimal 12 request per menit (Sangat aman untuk Free Tier Google API)
+        time.sleep(5) 
             
-    my_bar.empty() # Hilangkan progress bar setelah selesai
+    my_bar.empty() 
     return vectorstore
 
 def get_conversational_chain(vectorstore):
-    # Menggunakan Gemini 1.5 Flash yang cepat, temperature 0 agar jawaban faktual
     llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0) 
     
-    # Prompt super ketat untuk mencegah halusinasi
     system_prompt = (
         "Anda adalah Asisten Layanan yang profesional dan responsif. "
         "Gunakan HANYA potongan konteks referensi berikut untuk menjawab pertanyaan pengguna layanan (satker). "
@@ -115,7 +118,7 @@ def get_conversational_chain(vectorstore):
     ])
     
     question_answer_chain = create_stuff_documents_chain(llm, prompt)
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 5}) # Mengambil 5 potongan teks paling relevan
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 5}) 
     rag_chain = create_retrieval_chain(retriever, question_answer_chain)
     
     return rag_chain
@@ -124,45 +127,37 @@ def get_conversational_chain(vectorstore):
 # ANTARMUKA CHATBOT STREAMLIT
 # ==========================================
 
-# Inisialisasi API Key dari Streamlit Secrets
 if "GOOGLE_API_KEY" not in st.secrets:
     st.error("⚠️ API Key belum dikonfigurasi. Silakan atur GOOGLE_API_KEY di Streamlit Secrets.")
     st.stop()
 
 os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 
-# Inisialisasi memori percakapan
 if "messages" not in st.session_state:
     st.session_state.messages = [{"role": "assistant", "content": "Halo! Ada yang bisa saya bantu terkait aturan dan layanan perbendaharaan hari ini?"}]
 
-# Proses dokumen di latar belakang
 vectorstore = load_and_process_documents()
 
 if vectorstore is None:
-    st.warning("Belum ada dokumen referensi. Silakan unggah file PDF aturan (misal: PMK) ke folder 'referensi/' di GitHub.")
+    st.warning("Belum ada dokumen referensi. Silakan unggah file PDF aturan ke folder 'referensi/' di GitHub.")
 else:
-    # Tampilkan riwayat chat
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    # Tangkap input dari satker/pengguna
     if prompt := st.chat_input("Ketik pertanyaan Anda di sini..."):
-        # Tambahkan ke memori dan tampilkan di UI
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Proses jawaban
         with st.chat_message("assistant"):
-            with st.spinner("Mencari referensi aturan..."):
+            with st.spinner("Mencari referensi aturan yang relevan..."):
                 try:
                     rag_chain = get_conversational_chain(vectorstore)
                     response = rag_chain.invoke({"input": prompt})
                     answer = response["answer"]
                     st.markdown(answer)
                     
-                    # Simpan jawaban ke memori
                     st.session_state.messages.append({"role": "assistant", "content": answer})
                 except Exception as e:
-                    st.error(f"Terjadi kesalahan saat memproses jawaban: {e}")
+                    st.error(f"Terjadi kesalahan saat mencari jawaban: {e}")
